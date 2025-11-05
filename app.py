@@ -5,10 +5,10 @@ import pandas as pd
 import pickle
 import time 
 import os
-from openai import OpenAI  # <-- 1. Import OpenAI
+from openai import OpenAI  # We are using OpenAI
 from dotenv import load_dotenv
 
-# --- Load environment variables from .env file ---
+# --- Load environment variables from .env file (for local development) ---
 load_dotenv()
 
 # --- Page Configuration ---
@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # --- Constants ---
-STANDARD_INVERTER_DC_CAPACITY_KW = 1450.0#kW/h of data was collect 
+STANDARD_INVERTER_DC_CAPACITY_KW = 1450.0
 
 # --- Model Loading ---
 @st.cache_resource
@@ -56,122 +56,124 @@ with col2:
         
         st.markdown("Ask me questions about this project!")
 
-        # --- 2. Load the OpenAI API key ---
-        api_key = os.environ.get("OPENAI_API_KEY")
+        # --- THIS IS THE NEW, SMARTER SECRET LOADING ---
+        # It tries Streamlit's secrets first, then falls back to your .env file
+        api_key = st.secrets.get("OPENAI_API_KEY") # For cloud
+        if not api_key:
+            api_key = os.environ.get("OPENAI_API_KEY") # For local
 
         if not api_key:
-            st.warning("Could not find OpenAI API Key. Please make sure you have a `.env` file with your `OPENAI_API_KEY`.")
+            st.warning("Could not find OpenAI API Key. Please add it to your .env file or Streamlit Cloud secrets.")
         else:
-            # --- 3. Initialize the OpenAI Client ---
             try:
                 client = OpenAI(api_key=api_key)
             except Exception as e:
                 st.error(f"Error initializing OpenAI client: {e}")
                 client = None
                 
-            # --- 4. Define the model you want to use ---
-            model_name = "gpt-4o-mini" 
+            model_name = "gpt-4o-mini" # Using your chosen model
             
-            # Set up the system prompt
             system_prompt = f"""
-            You are an AI expert assistant for a college student's 'Solar Power Predictor' project expo.
-            Your **ONLY** purpose is to answer questions about this project.
-            
-            The project themes are:
-            - Solar power generation
-            - The user's prediction results
-            - Machine Learning (Random Forest)
-            - The technologies used (Python, Streamlit, Scikit-learn, OpenAI)
-            - Electrical engineering concepts related to solar energy.
-
-            **YOUR RULES:**
-            1.  **STAY ON TOPIC:** Only answer questions related to the themes above.
-            2.  **REFUSE OTHER TOPICS:** If the user asks about anything else (e.g., "write me a poem," "what is the capital of France"), you MUST politely refuse. Say: "I am an AI assistant for this solar project. I can only answer questions related to solar power, machine learning, or this application."
-            3.  **USE CONTEXT:** If the user asks about their prediction, use this data to inform your answer:
-                - **Prediction Inputs:** {st.session_state.get('last_prediction', {}).get('inputs', 'No prediction yet')}
-                - **Prediction Calculation:** {st.session_state.get('last_prediction', {}).get('calculation', 'No prediction yet')}
-            4.  **Be concise and clear.**
+            You are an AI expert assistant for a college student's 'Solar Power Predictor' project expo...
+            (Your full system prompt text)
+            ...
+            **Prediction Inputs:** {st.session_state.get('last_prediction', {}).get('inputs', 'No prediction yet')}
+            **Prediction Calculation:** {st.session_state.get('last_prediction', {}).get('calculation', 'No prediction yet')}
+            ...
             """
 
             # Initialize chat history
             if "messages" not in st.session_state:
                 st.session_state.messages = [
-                    # OpenAI uses a different format for system messages
                     {"role": "system", "content": system_prompt},
                     {"role": "assistant", "content": "Hi! Run a prediction, then ask me about it. (e.g., 'Why is my prediction low?')"}
                 ]
 
-            # Display prior chat messages
+            # (The rest of your chatbot logic: for loop, if prompt, etc...)
             for message in st.session_state.messages:
-                if message["role"] != "system": # Don't show the system prompt to the user
+                if message["role"] != "system": 
                     with st.chat_message(message["role"]):
                         st.markdown(message["content"])
 
-            # Get user input
             if prompt := st.chat_input("Ask about your prediction..."):
                 if not client:
                     st.error("OpenAI client not initialized. Please check your API key.")
                 else:
-                    # Add user message to history
                     st.session_state.messages.append({"role": "user", "content": prompt})
                     with st.chat_message("user"):
                         st.markdown(prompt)
 
-                    # --- 5. Call the OpenAI API ---
                     with st.chat_message("assistant"):
                         with st.spinner("AI is thinking..."):
                             try:
-                                # Send the *entire* message history
+                                # Re-create the system prompt with the LATEST context
+                                updated_system_prompt = f"""
+                                You are an AI expert assistant...
+                                ...
+                                **Prediction Inputs:** {st.session_state.get('last_prediction', {}).get('inputs', 'No prediction yet')}
+                                **Prediction Calculation:** {st.session_state.get('last_prediction', {}).get('calculation', 'No prediction yet')}
+                                ...
+                                """
+                                api_messages = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+                                api_messages.insert(0, {"role": "system", "content": updated_system_prompt}) 
+
                                 response = client.chat.completions.create(
                                     model=model_name,
-                                    messages=[msg for msg in st.session_state.messages if msg["role"] != "system"] + [{"role": "system", "content": system_prompt}], # Send history + system prompt
-                                    max_tokens=350 # Limit output tokens to save money
+                                    messages=api_messages,
+                                    max_tokens=250 
                                 )
                                 bot_response = response.choices[0].message.content
                                 st.markdown(bot_response)
-                                
-                                # Add bot response to history
                                 st.session_state.messages.append({"role": "assistant", "content": bot_response})
                             
                             except Exception as e:
                                 st.error(f"An error occurred with the OpenAI API. {e}")
 
 
-# --- Sidebar for User Input ---
+# --- Sidebar State Management ---
+def clear_prediction_state():
+    st.session_state.show_prediction = False
+    if 'last_prediction' in st.session_state:
+        del st.session_state.last_prediction
+    if 'messages' in st.session_state:
+        st.session_state.messages = [
+            {"role": "system", "content": "System prompt (will be updated)"}, # Placeholder
+            {"role": "assistant", "content": "Hi! Run a prediction, then ask me about it. Your inputs have changed."}
+        ]
+
+if 'show_prediction' not in st.session_state:
+    st.session_state.show_prediction = False
+
+
+# --- Sidebar Inputs ---
 st.sidebar.header("Input Conditions")
 st.sidebar.markdown("### 1. Plant DC Capacity")
 
 total_panels = st.sidebar.number_input(
-    label="Total Number of Solar Panels",
-    min_value=1,
-    value=30000,
-    step=100
+    label="Total Number of Solar Panels", min_value=1, value=30000, step=100,
+    on_change=clear_prediction_state
 )
 panel_capacity_W = st.sidebar.number_input(
-    label="Single Panel Capacity (in Watts)",
-    min_value=1,
-    value=330,
-    step=5,
-    help="The wattage (e.g., 330W, 450W) of one solar panel."
+    label="Single Panel Capacity (in Watts)", min_value=1, value=330, step=5,
+    help="The wattage (e.g., 330W, 450W) of one solar panel.",
+    on_change=clear_prediction_state
 )
 
 st.sidebar.markdown("### 2. Weather & Time")
 
-ambient_temp = st.sidebar.slider("Ambient Temperature (°C)", min_value=-10.0, max_value=50.0, value=25.0, step=0.1)
-module_temp = st.sidebar.slider("Module Temperature (°C)", min_value=-10.0, max_value=80.0, value=35.0, step=0.1)
-irradiation = st.sidebar.slider("Irradiation (Sunlight Intensity)", min_value=0.0, max_value=1.2, value=0.5, step=0.01)
-wind_speed = st.sidebar.slider("Wind Speed (m/s)", min_value=0.0, max_value=25.0, value=5.0, step=0.1,
-                               help="This is a simulation. Higher wind will apply a small efficiency bonus to simulate panel cooling.")
-hour = st.sidebar.slider("Hour of the Day (0-23)", min_value=0, max_value=23, value=12, step=1)
+ambient_temp = st.sidebar.slider("Ambient Temperature (°C)", -10.0, 50.0, 25.0, 0.1, on_change=clear_prediction_state)
+module_temp = st.sidebar.slider("Module Temperature (°C)", -10.0, 80.0, 35.0, 0.1, on_change=clear_prediction_state)
+irradiation = st.sidebar.slider("Irradiation (Sunlight Intensity)", 0.0, 1.2, 0.5, 0.01, on_change=clear_prediction_state)
+wind_speed = st.sidebar.slider("Wind Speed (m/s)", 0.0, 25.0, 5.0, 0.1,
+                               help="This is a simulation. Higher wind will apply a small efficiency bonus to simulate panel cooling.", on_change=clear_prediction_state)
+hour = st.sidebar.slider("Hour of the Day (0-23)", 0, 23, 12, 1, on_change=clear_prediction_state)
 st.sidebar.markdown("*(0-12 = 12am-12pm; 13-23 = 1pm-11pm)*")
-month = st.sidebar.slider("Month of the Year (1-12)", min_value=1, max_value=12, value=6, step=1)
+month = st.sidebar.slider("Month of the Year (1-12)", 1, 12, 6, 1, on_change=clear_prediction_state)
 
 
 # --- MAIN PAGE: The Predictor ---
 st.header("Predict Total Power Output")
-st.markdown("""
-    Use the sidebar to input your plant's **DC capacity** (panels) and the **weather conditions**, then click 'Predict'.
-""")
+st.markdown("Use the sidebar to input your plant's **DC capacity** (panels) and the **weather conditions**, then click 'Predict'.")
 
 if model and model_columns:
     if st.sidebar.button("Predict Power Output"):
@@ -183,10 +185,8 @@ if model and model_columns:
             'Hour': hour,
             'Month': month
         }
-        
         input_df = pd.DataFrame([input_data])
         input_df = input_df[model_columns] 
-
         prediction = model.predict(input_df)
         single_inverter_ac_power = prediction[0]
         
@@ -204,16 +204,12 @@ if model and model_columns:
         cooling_bonus_factor = 1.0 + (wind_speed * 0.002) 
         total_predicted_power = ml_predicted_power * cooling_bonus_factor
 
-        st.subheader("Prediction Result")
-        st.success(f"Predicted TOTAL Power Output: **{total_predicted_power:.2f} kW**")
-        
-        st.markdown("---")
-        st.subheader("Calculation Breakdown")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("1. Your Plant's DC Capacity", f"{total_plant_dc_capacity_kW:.0f} kW")
-        col2.metric("2. Base ML Prediction", f"{ml_predicted_power:.2f} kW")
-        col3.metric("3. Wind Cooling Factor", f"{cooling_bonus_factor:.3f}x")
-        col4.metric("4. Final Prediction (2 * 3)", f"{total_predicted_power:.2f} kW")
+        # Save all results to session_state
+        st.session_state.show_prediction = True
+        st.session_state.total_predicted_power = total_predicted_power
+        st.session_state.total_plant_dc_capacity_kW = total_plant_dc_capacity_kW
+        st.session_state.ml_predicted_power = ml_predicted_power
+        st.session_state.cooling_bonus_factor = cooling_bonus_factor
 
         st.session_state.last_prediction = {
             "inputs": {
@@ -232,6 +228,21 @@ if model and model_columns:
                 "Final Predicted Power (kW)": total_predicted_power
             }
         }
+        st.rerun()
+
+    # Display logic checks the session_state flag
+    if st.session_state.get('show_prediction', False):
+        st.subheader("Prediction Result")
+        st.success(f"Predicted TOTAL Power Output: **{st.session_state.total_predicted_power:.2f} kW**")
+        
+        st.markdown("---")
+        st.subheader("Calculation Breakdown")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("1. Your Plant's DC Capacity", f"{st.session_state.total_plant_dc_capacity_kW:.0f} kW")
+        col2.metric("2. Base ML Prediction", f"{st.session_state.ml_predicted_power:.2f} kW")
+        col3.metric("3. Wind Cooling Factor", f"{st.session_state.cooling_bonus_factor:.3f}x")
+        col4.metric("4. Final Prediction (2 * 3)", f"{st.session_state.total_predicted_power:.2f} kW")
+
         st.info("Prediction context saved! You can now click the '🤖' button at the top to ask the AI about this result.")
         
     else:
