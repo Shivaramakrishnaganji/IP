@@ -209,7 +209,7 @@ if model and model_columns:
             total_predicted_power = ml_predicted_power * cooling_bonus_factor
 
             # --- 4. ADD ARTIFICIAL DELAY ---
-            time.sleep(2) # Wait 2 seconds to make it feel like a real calculation
+            time.sleep(3) # Wait 2 seconds to make it feel like a real calculation
 
             # 5. Save all results to session_state
             st.session_state.show_prediction = True
