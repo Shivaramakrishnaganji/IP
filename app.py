@@ -5,11 +5,11 @@ import pandas as pd
 import pickle
 import time 
 import os
-import google.generativeai as genai
-from dotenv import load_dotenv  # Import dotenv
+from openai import OpenAI  # <-- 1. Import OpenAI
+from dotenv import load_dotenv
 
 # --- Load environment variables from .env file ---
-load_dotenv()  # Load the .env file
+load_dotenv()
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # --- Constants ---
-STANDARD_INVERTER_DC_CAPACITY_KW = 1450.0
+STANDARD_INVERTER_DC_CAPACITY_KW = 1450.0#kW/h of data was collect 
 
 # --- Model Loading ---
 @st.cache_resource
@@ -43,34 +43,34 @@ model, model_columns = load_model()
 
 
 # --- LAYOUT: Title and Chatbot Button in Columns ---
-col1, col2 = st.columns([3, 1]) # Give 3/4 space to title, 1/4 to button
+col1, col2 = st.columns([3, 1]) 
 
 with col1:
     st.title("☀️ Solar Power Generation Predictor")
 
 # --- Chatbot Popover (the "layer") ---
 with col2:
-    # We add a little space to vertically center it
     st.write("") 
     st.write("")
     with st.popover("🤖 AI Explainer Assistant", use_container_width=True):
         
         st.markdown("Ask me questions about this project!")
 
-        # --- Load the API key from os.environ ---
-        api_key = os.environ.get("GEMINI_API_KEY")
+        # --- 2. Load the OpenAI API key ---
+        api_key = os.environ.get("OPENAI_API_KEY")
 
         if not api_key:
-            st.warning("Could not find Google AI Studio API Key. Please make sure you have a `.env` file with your `GEMINI_API_KEY`.")
+            st.warning("Could not find OpenAI API Key. Please make sure you have a `.env` file with your `OPENAI_API_KEY`.")
         else:
+            # --- 3. Initialize the OpenAI Client ---
             try:
-                genai.configure(api_key=api_key)
+                client = OpenAI(api_key=api_key)
             except Exception as e:
-                st.error(f"Error configuring Google AI: {e}")
+                st.error(f"Error initializing OpenAI client: {e}")
+                client = None
                 
-            # --- *** THIS IS THE ERROR FIX *** ---
-            # The correct model name is 'gemini-pro'
-            model_name = "gemini-pro" 
+            # --- 4. Define the model you want to use ---
+            model_name = "gpt-4o-mini" 
             
             # Set up the system prompt
             system_prompt = f"""
@@ -81,7 +81,7 @@ with col2:
             - Solar power generation
             - The user's prediction results
             - Machine Learning (Random Forest)
-            - The technologies used (Python, Streamlit, Scikit-learn, Google Gemini)
+            - The technologies used (Python, Streamlit, Scikit-learn, OpenAI)
             - Electrical engineering concepts related to solar energy.
 
             **YOUR RULES:**
@@ -93,52 +93,51 @@ with col2:
             4.  **Be concise and clear.**
             """
 
-            # Initialize the chat model in session state
-            if "chat_model" not in st.session_state:
-                try:
-                    generative_model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=system_prompt
-                    )
-                    st.session_state.chat_model = generative_model.start_chat(history=[])
-                except Exception as e:
-                    st.error(f"Error starting chat model: {e}")
-                    st.session_state.chat_model = None
-            
             # Initialize chat history
             if "messages" not in st.session_state:
                 st.session_state.messages = [
+                    # OpenAI uses a different format for system messages
+                    {"role": "system", "content": system_prompt},
                     {"role": "assistant", "content": "Hi! Run a prediction, then ask me about it. (e.g., 'Why is my prediction low?')"}
                 ]
 
             # Display prior chat messages
             for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
+                if message["role"] != "system": # Don't show the system prompt to the user
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
 
             # Get user input
             if prompt := st.chat_input("Ask about your prediction..."):
-                if not st.session_state.chat_model:
-                    st.error("Chat model is not initialized. Please check your API key.")
+                if not client:
+                    st.error("OpenAI client not initialized. Please check your API key.")
                 else:
+                    # Add user message to history
                     st.session_state.messages.append({"role": "user", "content": prompt})
                     with st.chat_message("user"):
                         st.markdown(prompt)
 
+                    # --- 5. Call the OpenAI API ---
                     with st.chat_message("assistant"):
                         with st.spinner("AI is thinking..."):
                             try:
-                                response = st.session_state.chat_model.send_message(prompt)
-                                bot_response = response.text
+                                # Send the *entire* message history
+                                response = client.chat.completions.create(
+                                    model=model_name,
+                                    messages=[msg for msg in st.session_state.messages if msg["role"] != "system"] + [{"role": "system", "content": system_prompt}], # Send history + system prompt
+                                    max_tokens=350 # Limit output tokens to save money
+                                )
+                                bot_response = response.choices[0].message.content
                                 st.markdown(bot_response)
+                                
+                                # Add bot response to history
                                 st.session_state.messages.append({"role": "assistant", "content": bot_response})
                             
                             except Exception as e:
-                                st.error(f"An error occurred with the Gemini API. {e}")
+                                st.error(f"An error occurred with the OpenAI API. {e}")
 
 
 # --- Sidebar for User Input ---
-# This part is all the same
 st.sidebar.header("Input Conditions")
 st.sidebar.markdown("### 1. Plant DC Capacity")
 
@@ -169,7 +168,6 @@ month = st.sidebar.slider("Month of the Year (1-12)", min_value=1, max_value=12,
 
 
 # --- MAIN PAGE: The Predictor ---
-# This is no longer inside a tab
 st.header("Predict Total Power Output")
 st.markdown("""
     Use the sidebar to input your plant's **DC capacity** (panels) and the **weather conditions**, then click 'Predict'.
